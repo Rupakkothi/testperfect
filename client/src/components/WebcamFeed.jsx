@@ -107,15 +107,15 @@ export default function WebcamFeed({ onAudioAlert, onStatusChange }) {
   return (
     <div className="proctor-sidebar">
       <div className="webcam-container">
-        {streamActive ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="webcam-video"
-          />
-        ) : (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="webcam-video"
+          style={{ display: streamActive ? 'block' : 'none' }}
+        />
+        {!streamActive && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '1rem', textAlign: 'center', color: 'var(--text-muted)' }}>
             {errorMsg ? errorMsg : "Requesting camera stream..."}
           </div>
