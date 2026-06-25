@@ -1379,23 +1379,23 @@ export default function App() {
   const renderView = () => {
     switch (view) {
       case 'login':
-        return <AuthPage />;
+        return AuthPage();
       case 'candidate-dash':
-        return <CandidateDashboard />;
+        return CandidateDashboard();
       case 'educator-dash':
-        return <EducatorDashboard />;
+        return EducatorDashboard();
       case 'create-test':
-        return <CreateTestPage />;
+        return CreateTestPage();
       case 'view-results':
-        return <ResultsPage />;
+        return ResultsPage();
       case 'verify-hardware':
-        return <HardwareSetupPage />;
+        return HardwareSetupPage();
       case 'take-test':
-        return <ExamConsole />;
+        return ExamConsole();
       case 'submit-success':
-        return <SubmissionSuccessPage />;
+        return SubmissionSuccessPage();
       default:
-        return <AuthPage />;
+        return AuthPage();
     }
   };
 
