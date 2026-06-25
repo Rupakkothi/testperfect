@@ -13,7 +13,10 @@ export default function App() {
   const [apiUrlOverrideInput, setApiUrlOverrideInput] = useState(API_URL);
   
   // Direct Test Access via Query Parameter (?testId=...)
-  const [targetTestId, setTargetTestId] = useState(null);
+  const [targetTestId, setTargetTestId] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('testId') || params.get('test') || null;
+  });
 
   // Hardware Verification States
   const [camVerified, setCamVerified] = useState(false);
@@ -47,14 +50,7 @@ export default function App() {
   const [compileOutputs, setCompileOutputs] = useState({}); // { [questionId]: { stdout, stderr, status, time } }
   const [isRunningCode, setIsRunningCode] = useState(false);
 
-  // Read query parameters on load
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tId = params.get('testId') || params.get('test');
-    if (tId) {
-      setTargetTestId(tId);
-    }
-  }, []);
+
 
   // Authentication validation
   useEffect(() => {
@@ -65,7 +61,7 @@ export default function App() {
           setUser(res.user);
           // If candidate has a target test link, launch it immediately
           if (res.user.role === 'candidate' && targetTestId) {
-            handleStartExam(targetTestId);
+            handleStartExam(targetTestId, res.user);
           } else {
             setView(res.user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
           }
@@ -259,7 +255,7 @@ export default function App() {
   }, [view]);
 
   // Candidate: Start taking test (Triggers Device Check screen first)
-  const handleStartExam = async (testId) => {
+  const handleStartExam = async (testId, currentUser = null) => {
     try {
       const test = await api.get(`/api/tests/${testId}`);
       setSelectedTest(test);
@@ -288,7 +284,8 @@ export default function App() {
       setView('verify-hardware');
     } catch (err) {
       alert("Error starting test (check if test exists): " + err.message);
-      setView(user ? (user.role === 'educator' ? 'educator-dash' : 'candidate-dash') : 'login');
+      const activeUser = currentUser || user;
+      setView(activeUser ? (activeUser.role === 'educator' ? 'educator-dash' : 'candidate-dash') : 'login');
     }
   };
 
@@ -1015,7 +1012,7 @@ export default function App() {
                       <td>{test.totalMarks} Marks</td>
                       <td>{test.duration} min</td>
                       <td style={{ textAlign: 'right' }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => handleStartExam(test.id)}>
+                        <button className="btn btn-primary btn-sm" onClick={() => handleStartExam(test.id, user)}>
                           Start Exam
                         </button>
                       </td>

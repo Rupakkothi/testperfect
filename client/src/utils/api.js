@@ -14,7 +14,12 @@ const getApiBaseUrl = () => {
     return origin.replace(':5173', ':5000');
   }
   
-  return origin; // Production default (same domain monorepo or relative routes)
+  // Production fallback: If running on a Vercel app domain, default to the Render backend server
+  if (origin.includes('vercel.app')) {
+    return 'https://testperfect-backend1.onrender.com';
+  }
+  
+  return origin; // Production default fallback
 };
 
 export const API_URL = getApiBaseUrl();
