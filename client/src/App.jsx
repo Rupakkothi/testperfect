@@ -7,11 +7,18 @@ export default function App() {
   // Navigation & Authentication
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token') || '');
-  const [view, setView] = useState('login'); // 'login', 'candidate-dash', 'educator-dash', 'create-test', 'take-test', 'view-results', 'submit-success'
+  const [view, setView] = useState('login'); // 'login', 'candidate-dash', 'educator-dash', 'create-test', 'take-test', 'view-results', 'submit-success', 'verify-hardware'
   
   // Custom API configuration
   const [apiUrlOverrideInput, setApiUrlOverrideInput] = useState(API_URL);
   
+  // Direct Test Access via Query Parameter (?testId=...)
+  const [targetTestId, setTargetTestId] = useState(null);
+
+  // Hardware Verification States
+  const [camVerified, setCamVerified] = useState(false);
+  const [micVerified, setMicVerified] = useState(false);
+
   // Test Creation States
   const [newTestTitle, setNewTestTitle] = useState('');
   const [newTestDesc, setNewTestDesc] = useState('');
@@ -27,7 +34,6 @@ export default function App() {
   const [violations, setViolations] = useState([]); // Array of {type, timestamp, details}
   const [warningMessage, setWarningMessage] = useState('');
   const [isExamCompleted, setIsExamCompleted] = useState(false);
-  const [examEndTime, setExamEndTime] = useState(null);
 
   // Educator View States
   const [createdTests, setCreatedTests] = useState([]);
@@ -39,22 +45,35 @@ export default function App() {
   const [compileOutputs, setCompileOutputs] = useState({}); // { [questionId]: { stdout, stderr, status, time } }
   const [isRunningCode, setIsRunningCode] = useState(false);
 
+  // Read query parameters on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tId = params.get('testId') || params.get('test');
+    if (tId) {
+      setTargetTestId(tId);
+    }
+  }, []);
+
   // Authentication validation
   useEffect(() => {
     if (token) {
       localStorage.setItem('token', token);
-      // Fetch current profile
       api.get('/api/auth/me')
         .then(res => {
           setUser(res.user);
-          setView(res.user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
+          // If candidate has a target test link, launch it immediately
+          if (res.user.role === 'candidate' && targetTestId) {
+            handleStartExam(targetTestId);
+          } else {
+            setView(res.user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
+          }
         })
         .catch(err => {
           console.error("Auth verify error", err);
           handleLogout();
         });
     }
-  }, [token]);
+  }, [token, targetTestId]);
 
   // Timer logic for Exam taking
   useEffect(() => {
@@ -109,7 +128,6 @@ export default function App() {
     };
     setViolations(prev => {
       const updated = [...prev, newViolation];
-      // Auto-submit after 3 tab switches
       const tabSwitches = updated.filter(v => v.type === 'tab_switch' || v.type === 'window_blur').length;
       if (tabSwitches >= 3) {
         alert("Maximum focus-loss violations exceeded. Your exam is submitting automatically.");
@@ -124,6 +142,19 @@ export default function App() {
     setToken('');
     setUser(null);
     setView('login');
+  };
+
+  // Copy Direct Test URL helper
+  const handleCopyTestLink = (testId) => {
+    const link = `${window.location.origin}?testId=${testId}`;
+    navigator.clipboard.writeText(link)
+      .then(() => {
+        alert(`Test link copied to clipboard:\n${link}`);
+      })
+      .catch(err => {
+        console.error("Failed to copy link:", err);
+        alert(`Copy URL manually: ${link}`);
+      });
   };
 
   // Format seconds to MM:SS
@@ -141,6 +172,14 @@ export default function App() {
       const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
       const data = await api.post(endpoint, { username, password, role });
       setToken(data.token);
+      setUser(data.user);
+      
+      // Navigate immediately if direct exam link is target
+      if (data.user.role === 'candidate' && targetTestId) {
+        handleStartExam(targetTestId);
+      } else {
+        setView(data.user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
+      }
     } catch (err) {
       alert(err.message);
     }
@@ -176,7 +215,6 @@ export default function App() {
         questions: newTestQuestions
       });
       alert("Test created successfully!");
-      // Reset forms
       setNewTestTitle('');
       setNewTestDesc('');
       setNewTestDuration(60);
@@ -215,23 +253,18 @@ export default function App() {
     }
   }, [view]);
 
-  // Candidate: Start taking test
+  // Candidate: Start taking test (Triggers Device Check screen first)
   const handleStartExam = async (testId) => {
     try {
       const test = await api.get(`/api/tests/${testId}`);
       setSelectedTest(test);
-      setExamTimer(test.duration * 60);
-      setViolations([]);
-      setWarningMessage('');
       setCurrentQuestionIndex(0);
       
-      // Initialize candidate answer stubs
       const stubs = {};
       test.questions.forEach(q => {
         if (q.type === 'mcq') {
           stubs[q.id] = { selectedOption: null };
         } else {
-          // Default stubs for competitive programming
           stubs[q.id] = {
             language: 'python',
             code: `import sys\n\ndef solve():\n    # Read input using sys.stdin.readline() or input()\n    # Print output using print()\n    # Example: line = sys.stdin.readline().strip()\n    pass\n\nif __name__ == '__main__':\n    solve()`
@@ -239,19 +272,18 @@ export default function App() {
         }
       });
       setCandidateAnswers(stubs);
+      setViolations([]);
+      setWarningMessage('');
+      
+      // Reset hardware verification status
+      setCamVerified(false);
+      setMicVerified(false);
 
-      // Request fullscreen for proctoring
-      try {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen();
-        }
-      } catch (e) {
-        console.warn("Fullscreen request bypassed:", e);
-      }
-
-      setView('take-test');
+      // Route to Device Verification Screen
+      setView('verify-hardware');
     } catch (err) {
-      alert("Error starting test: " + err.message);
+      alert("Error starting test (check if test exists): " + err.message);
+      setView(user ? (user.role === 'educator' ? 'educator-dash' : 'candidate-dash') : 'login');
     }
   };
 
@@ -304,7 +336,6 @@ export default function App() {
 
       const result = await api.post('/api/submissions', payload);
       
-      // Exit fullscreen
       if (document.fullscreenElement) {
         document.exitFullscreen().catch(err => console.error(err));
       }
@@ -315,7 +346,6 @@ export default function App() {
       alert("Error submitting exam: " + err.message);
     }
   };
-
 
   // --- SUB-COMPONENTS / LAYOUTS ---
 
@@ -334,9 +364,19 @@ export default function App() {
     return (
       <div className="auth-wrapper">
         <div className="glass-card auth-card">
-          <h2 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-            {isRegister ? 'Create Account' : 'Welcome Back'}
+          <h2 style={{ textAlign: 'center', marginBottom: '0.25rem' }}>
+            {isRegister ? 'Register Account' : 'Sign In'}
           </h2>
+          <p style={{ textAlign: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '2rem' }}>
+            Welcome to <strong>testperfect</strong> platform
+          </p>
+
+          {targetTestId && (
+            <div style={{ background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.3)', color: '#c084fc', padding: '0.75rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.85rem', textAlign: 'center', fontWeight: 600 }}>
+              🔗 You are logging in to take a direct exam link.
+            </div>
+          )}
+
           <form onSubmit={onSubmit}>
             <div className="form-group">
               <label className="form-label">Username</label>
@@ -364,7 +404,7 @@ export default function App() {
 
             {isRegister && (
               <div className="form-group">
-                <label className="form-label">Register As</label>
+                <label className="form-label">Sign Up As</label>
                 <select 
                   className="form-select"
                   value={roleInput}
@@ -393,28 +433,24 @@ export default function App() {
             </span>
           </div>
 
-          {/* Dynamic API Configuration for testing */}
-          <div style={{ marginTop: '2.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
-            <label className="form-label" style={{ fontSize: '0.75rem' }}>API Endpoint URL (for mobile/external device tests):</label>
+          <div style={{ marginTop: '2rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
+            <label className="form-label" style={{ fontSize: '0.75rem' }}>API Endpoint URL:</label>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <input 
                 className="form-input" 
                 type="text" 
                 value={apiUrlOverrideInput}
                 onChange={e => setApiUrlOverrideInput(e.target.value)}
-                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} 
+                style={{ padding: '0.3rem 0.5rem', fontSize: '0.75rem' }} 
               />
               <button 
                 className="btn btn-secondary" 
                 onClick={() => setApiUrlOverride(apiUrlOverrideInput)}
-                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
               >
                 Apply
               </button>
             </div>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '0.25rem' }}>
-              Current: <code style={{ color: 'var(--accent-secondary)' }}>{API_URL}</code>
-            </p>
           </div>
         </div>
       </div>
@@ -427,12 +463,9 @@ export default function App() {
     const [qType, setQType] = useState('mcq');
     const [qMarks, setQMarks] = useState(5);
     
-    // MCQ specific creator state
     const [mcqOpts, setMcqOpts] = useState(['', '', '', '']);
     const [mcqCorrect, setMcqCorrect] = useState(0);
 
-    // Coding question specific creator state
-    const [codingLang, setCodingLang] = useState('python');
     const [sampleTestCases, setSampleTestCases] = useState([{ input: '', expectedOutput: '', isSample: true }]);
     const [hiddenTestCases, setHiddenTestCases] = useState([{ input: '', expectedOutput: '', isSample: false }]);
 
@@ -474,7 +507,6 @@ export default function App() {
         newQ.options = mcqOpts;
         newQ.correctOption = mcqCorrect;
       } else {
-        // Collect and validate test cases
         const allTestCases = [
           ...sampleTestCases.filter(tc => tc.input.trim() || tc.expectedOutput.trim()),
           ...hiddenTestCases.filter(tc => tc.input.trim() || tc.expectedOutput.trim())
@@ -484,7 +516,6 @@ export default function App() {
         }
         newQ.testCases = allTestCases;
         newQ.languages = ['python', 'cpp', 'c', 'java'];
-        // Default stubs
         newQ.starterCode = {
           python: `import sys\n\ndef solve():\n    # Read input using sys.stdin.readline() or input()\n    # Print output using print()\n    pass\n\nif __name__ == '__main__':\n    solve()`,
           cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Read input using cin\n    // Write output using cout\n    return 0;\n}`,
@@ -495,7 +526,6 @@ export default function App() {
 
       setNewTestQuestions([...newTestQuestions, newQ]);
       
-      // Reset Question Creator Forms
       setQText('');
       setQMarks(5);
       setMcqOpts(['', '', '', '']);
@@ -512,7 +542,6 @@ export default function App() {
         </div>
 
         <div className="grid-cols-2">
-          {/* Left panel: Test Meta Details */}
           <div>
             <h3>1. Test Details</h3>
             <div className="form-group">
@@ -551,7 +580,7 @@ export default function App() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {newTestQuestions.map((q, idx) => (
-                    <div key={idx} style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                    <div key={idx} style={{ background: 'rgba(255,255,255,0.01)', padding: '1rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--accent-primary)', fontWeight: 600 }}>
                         <span>QUESTION {idx + 1} ({q.type.toUpperCase()})</span>
                         <span>{q.marks} Marks</span>
@@ -564,8 +593,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right panel: Add Question Form */}
-          <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '1.5rem' }}>
+          <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '2rem' }}>
             <h3>2. Add Question</h3>
             <div className="form-group">
               <label className="form-label">Question Type</label>
@@ -604,7 +632,7 @@ export default function App() {
                       type="radio" 
                       name="correct-mcq" 
                       checked={mcqCorrect === i}
-                      onChange={() => setAddCorrectIndex(i)} 
+                      onChange={() => setMcqCorrect(i)} 
                       style={{ cursor: 'pointer' }}
                     />
                     <input 
@@ -621,14 +649,13 @@ export default function App() {
             ) : (
               <div>
                 <h4 style={{ marginTop: '1rem' }}>Test Cases</h4>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Enter inputs and matching expected stdout strings. Clean outputs only.</p>
                 
                 <h5>Sample Test Cases (Visible to candidates)</h5>
                 {sampleTestCases.map((tc, idx) => (
                   <div key={idx} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
                     <input 
                       className="form-input" 
-                      placeholder="Input stdout" 
+                      placeholder="Input" 
                       value={tc.input} 
                       onChange={e => updateTestCase(true, idx, 'input', e.target.value)}
                     />
@@ -649,7 +676,7 @@ export default function App() {
                   <div key={idx} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
                     <input 
                       className="form-input" 
-                      placeholder="Input stdout" 
+                      placeholder="Input" 
                       value={tc.input} 
                       onChange={e => updateTestCase(false, idx, 'input', e.target.value)}
                     />
@@ -686,20 +713,14 @@ export default function App() {
     );
   }
 
-  // Set MCQ correct index helper
-  function setAddCorrectIndex(idx) {
-    // A small helper so state matches correctly
-    // Resolved inside CreateTestPage scopes.
-  }
-
   // Educator: Dashboard View
   function EducatorDashboard() {
     return (
       <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
           <div>
-            <h1>Educator Console</h1>
-            <p>Create examinations, configure test cases, and analyze candidate monitor logs.</p>
+            <h1 className="gradient-text">Educator Console</h1>
+            <p>Create examinations, copy test links to send to students, and inspect proctor monitor logs.</p>
           </div>
           <button className="btn btn-primary" onClick={() => setView('create-test')}>
             + Create New Test
@@ -732,7 +753,10 @@ export default function App() {
                       <td>{test.duration} min</td>
                       <td style={{ color: 'var(--text-muted)' }}>{new Date(test.createdAt).toLocaleDateString()}</td>
                       <td style={{ textAlign: 'right', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => handleViewResults(test)}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => handleCopyTestLink(test.id)}>
+                          🔗 Copy Test Link
+                        </button>
+                        <button className="btn btn-primary btn-sm" onClick={() => handleViewResults(test)}>
                           View Results
                         </button>
                       </td>
@@ -777,10 +801,10 @@ export default function App() {
                       key={sub.id} 
                       className={`glass-card ${selectedSubmission?.id === sub.id ? 'active' : ''}`}
                       style={{ 
-                        padding: '1rem', 
+                        padding: '1.25rem', 
                         cursor: 'pointer',
                         borderColor: selectedSubmission?.id === sub.id ? 'var(--accent-primary)' : 'var(--border-color)',
-                        background: selectedSubmission?.id === sub.id ? 'rgba(99, 102, 241, 0.05)' : 'rgba(255,255,255,0.01)'
+                        background: selectedSubmission?.id === sub.id ? 'rgba(139, 92, 246, 0.05)' : 'rgba(255,255,255,0.01)'
                       }}
                       onClick={() => setSelectedSubmission(sub)}
                     >
@@ -790,10 +814,10 @@ export default function App() {
                       </div>
                       
                       <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
-                        <span style={{ color: focusLosses > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
+                        <span style={{ color: focusLosses > 0 ? 'var(--danger)' : 'var(--text-muted)', fontWeight: 600 }}>
                           Focus Violations: {focusLosses}
                         </span>
-                        <span style={{ color: noiseAlerts > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>
+                        <span style={{ color: noiseAlerts > 0 ? 'var(--warning)' : 'var(--text-muted)', fontWeight: 600 }}>
                           Noise Alerts: {noiseAlerts}
                         </span>
                       </div>
@@ -895,9 +919,9 @@ export default function App() {
   function CandidateDashboard() {
     return (
       <div>
-        <div style={{ marginBottom: '2rem' }}>
-          <h1>Candidate Portal</h1>
-          <p>Verify your webcam device access, review instructions, and start your exams below.</p>
+        <div style={{ marginBottom: '2.5rem' }}>
+          <h1 className="gradient-text">Candidate Dashboard</h1>
+          <p>Verify your webcam access, review instructions, and start your exams below.</p>
         </div>
 
         <div className="glass-card">
@@ -941,6 +965,114 @@ export default function App() {
     );
   }
 
+  // Intermediate Hardware Setup Verification Screen
+  function HardwareSetupPage() {
+    const handleProceedToExam = () => {
+      // Enter Fullscreen
+      try {
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(err => console.warn(err));
+        }
+      } catch (e) {
+        console.warn("Fullscreen request bypassed:", e);
+      }
+      
+      // Start countdown timer
+      setExamTimer(selectedTest.duration * 60);
+      setViolations([]);
+      // Start testconsole
+      setView('take-test');
+    };
+
+    return (
+      <div className="glass-card" style={{ maxWidth: '900px', margin: '0 auto' }}>
+        <h2 style={{ marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }} className="gradient-text">
+          🛡️ Proctor Setup & Device Check
+        </h2>
+        
+        <div className="grid-cols-2">
+          {/* Instructions Panel */}
+          <div style={{ display: 'flex', flexDirection: 'column', justify: 'center' }}>
+            <h3 style={{ marginBottom: '1.25rem' }}>Verify Your Hardware</h3>
+            <p>This exam is actively proctored. Before launching the examination console, you must grant permissions and verify your devices.</p>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', margin: '1rem 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ 
+                  width: '32px', 
+                  height: '32px', 
+                  borderRadius: '50%', 
+                  background: camVerified ? 'var(--success)' : 'rgba(239, 68, 68, 0.1)', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  fontWeight: 800,
+                  color: '#fff',
+                  boxShadow: camVerified ? '0 0 10px var(--success)' : 'none'
+                }}>
+                  {camVerified ? '✓' : '1'}
+                </div>
+                <div>
+                  <span style={{ fontWeight: 600, display: 'block' }}>Webcam Check</span>
+                  <span style={{ fontSize: '0.85rem', color: camVerified ? 'var(--success)' : 'var(--text-muted)' }}>
+                    {camVerified ? 'Webcam verified successfully.' : 'Please allow camera permissions.'}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ 
+                  width: '32px', 
+                  height: '32px', 
+                  borderRadius: '50%', 
+                  background: micVerified ? 'var(--success)' : 'rgba(239, 68, 68, 0.1)', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  fontWeight: 800,
+                  color: '#fff',
+                  boxShadow: micVerified ? '0 0 10px var(--success)' : 'none'
+                }}>
+                  {micVerified ? '✓' : '2'}
+                </div>
+                <div>
+                  <span style={{ fontWeight: 600, display: 'block' }}>Microphone Check</span>
+                  <span style={{ fontSize: '0.85rem', color: micVerified ? 'var(--success)' : 'var(--text-muted)' }}>
+                    {micVerified ? 'Microphone verified successfully.' : 'Please allow mic permissions and speak.'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', padding: '1rem', borderRadius: '8px', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+              ⚠️ <strong>Proctor Rules</strong>: Exiting fullscreen, switching browser tabs, minimizing the screen, or loud background voices will trigger security flags and may result in your exam being auto-submitted.
+            </div>
+
+            <button 
+              className={`btn ${camVerified && micVerified ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ width: '100%', padding: '1rem', fontSize: '1.05rem' }}
+              disabled={!(camVerified && micVerified)}
+              onClick={handleProceedToExam}
+            >
+              {camVerified && micVerified ? 'Verify & Start Exam' : 'Awaiting Hardware Permission...'}
+            </button>
+          </div>
+
+          {/* Media Stream Verification Preview */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            <WebcamFeed 
+              onAudioAlert={() => {}} // No alerts on check screen
+              onStatusChange={(status) => {
+                setCamVerified(status.camera);
+                setMicVerified(status.mic);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Exam environment (Candidate view)
   function ExamConsole() {
     const q = selectedTest.questions[currentQuestionIndex];
@@ -961,7 +1093,6 @@ export default function App() {
     };
 
     const handleLanguageChange = (newLang) => {
-      // Stub dictionary
       const stubs = {
         python: `import sys\n\ndef solve():\n    # Read input using sys.stdin.readline() or input()\n    # Print output using print()\n    pass\n\nif __name__ == '__main__':\n    solve()`,
         cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Read input using cin\n    // Write output using cout\n    return 0;\n}`,
@@ -982,9 +1113,9 @@ export default function App() {
     return (
       <div className="exam-layout">
         {/* Left Side: Questions navigator */}
-        <div className="exam-sidebar-left glass-card" style={{ padding: '1.25rem' }}>
+        <div className="exam-sidebar-left glass-card" style={{ padding: '1.5rem' }}>
           <div className="question-navigator">
-            <h3>Nav Index</h3>
+            <h3>Exam Grid</h3>
             <div className="question-grid">
               {selectedTest.questions.map((question, idx) => {
                 const ans = candidateAnswers[question.id];
@@ -1001,9 +1132,9 @@ export default function App() {
               })}
             </div>
             
-            <div style={{ marginTop: '2rem', fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div style={{ marginTop: '2rem', fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
               <div>🟢 Green: Attempted</div>
-              <div>🔵 Indigo: Current</div>
+              <div>🔵 Violet: Current</div>
               <div>⚫ Grey: Unattempted</div>
             </div>
           </div>
@@ -1016,7 +1147,7 @@ export default function App() {
             <span className="badge badge-primary">{q.marks} Marks</span>
           </div>
 
-          <div style={{ fontSize: '1.1rem', whiteSpace: 'pre-wrap', fontWeight: 500 }}>
+          <div style={{ fontSize: '1.15rem', whiteSpace: 'pre-wrap', fontWeight: 500, color: '#fff' }}>
             {q.questionText}
           </div>
 
@@ -1043,22 +1174,22 @@ export default function App() {
                 languages={q.languages}
               />
               
-              <div style={{ marginTop: '1.5rem' }}>
+              <div style={{ marginTop: '1.75rem' }}>
                 <h4>Test Output Terminal</h4>
                 <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
                   <div style={{ flex: 1 }}>
-                    <span className="form-label">Terminal Stdin Inputs (Run Code payload)</span>
+                    <span className="form-label">Stdin Inputs</span>
                     <textarea 
                       className="form-textarea" 
                       style={{ minHeight: '60px', fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}
-                      placeholder="e.g. 5\n10 20"
+                      placeholder="Enter inputs here..."
                       value={compileInputs[q.id] || ''}
                       onChange={e => setCompileInputs({ ...compileInputs, [q.id]: e.target.value })}
                     />
                   </div>
                   <div style={{ alignSelf: 'flex-end' }}>
                     <button 
-                      className="btn btn-secondary" 
+                      className="btn btn-success" 
                       onClick={() => handleRunCode(q.id)}
                       disabled={isRunningCode}
                     >
@@ -1069,7 +1200,7 @@ export default function App() {
 
                 {compileOutputs[q.id] && (
                   <div className="compiler-output-panel">
-                    <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Stdout Result:</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Execution Result:</div>
                     {compileOutputs[q.id].compile_output ? (
                       <div className="output-compile-err">{compileOutputs[q.id].compile_output}</div>
                     ) : compileOutputs[q.id].stderr ? (
@@ -1093,7 +1224,7 @@ export default function App() {
               disabled={currentQuestionIndex === 0}
               onClick={() => setCurrentQuestionIndex(prev => prev - 1)}
             >
-              Previous Question
+              Previous
             </button>
             <button 
               className="btn btn-secondary"
@@ -1107,9 +1238,9 @@ export default function App() {
 
         {/* Right Side: Webcam feed, timer, Submit button */}
         <div className="exam-sidebar-right proctor-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div className="glass-card" style={{ padding: '1rem', textAlign: 'center' }}>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', fontWeight: 600 }}>TIME REMAINING</div>
-            <div style={{ fontSize: '2.5rem', fontWeight: 800, color: examTimer < 300 ? 'var(--danger)' : 'var(--text-primary)' }}>
+          <div className="glass-card" style={{ padding: '1.25rem', textAlign: 'center', border: '1px solid rgba(139, 92, 246, 0.2)' }}>
+            <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 700, letterSpacing: '0.05rem' }}>TIME REMAINING</div>
+            <div style={{ fontSize: '2.5rem', fontWeight: 800, color: examTimer < 300 ? 'var(--danger)' : 'var(--accent-primary)' }}>
               {formatTime(examTimer)}
             </div>
           </div>
@@ -1135,7 +1266,7 @@ export default function App() {
         {warningMessage && (
           <div className="modal-overlay">
             <div className="modal-content">
-              <div className="modal-icon">⚠️ Warning</div>
+              <div className="modal-icon">⚠️</div>
               <h2 style={{ color: 'var(--danger)', margin: '1rem 0' }}>Security Alert</h2>
               <p style={{ fontSize: '1.05rem', color: 'var(--text-primary)' }}>{warningMessage}</p>
               <button 
@@ -1156,17 +1287,21 @@ export default function App() {
   function SubmissionSuccessPage() {
     return (
       <div className="auth-wrapper">
-        <div className="glass-card" style={{ textAlign: 'center', maxWidth: '480px', padding: '3rem 2rem' }}>
-          <span style={{ fontSize: '4rem' }}>🎉</span>
+        <div className="glass-card" style={{ textAlign: 'center', maxWidth: '480px', padding: '3.5rem 2rem' }}>
+          <span style={{ fontSize: '4.5rem' }}>🎉</span>
           <h2 style={{ margin: '1rem 0' }}>Exam Completed</h2>
           <p>Your answers have been graded and recorded successfully.</p>
-          <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1.5rem', borderRadius: '12px', border: '1px solid var(--border-color)', margin: '2rem 0' }}>
-            <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'block', marginBottom: '0.25rem' }}>YOUR GRADE SCORE</span>
-            <span style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--accent-primary)' }}>
+          <div style={{ background: 'rgba(139, 92, 246, 0.08)', padding: '1.5rem', borderRadius: '16px', border: '1px solid rgba(139, 92, 246, 0.2)', margin: '2rem 0' }}>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'block', marginBottom: '0.25rem', fontWeight: 600, letterSpacing: '0.05em' }}>GRADE SCORE</span>
+            <span style={{ fontSize: '2.75rem', fontWeight: 800, color: '#fff' }}>
               {isExamCompleted?.score} / {isExamCompleted?.totalMarks} Marks
             </span>
           </div>
-          <button className="btn btn-primary" onClick={() => setView('candidate-dash')}>
+          <button className="btn btn-primary" onClick={() => {
+            window.history.pushState({}, document.title, window.location.pathname);
+            setTargetTestId(null);
+            setView('candidate-dash');
+          }}>
             Return to Dashboard
           </button>
         </div>
@@ -1187,6 +1322,8 @@ export default function App() {
         return <CreateTestPage />;
       case 'view-results':
         return <ResultsPage />;
+      case 'verify-hardware':
+        return <HardwareSetupPage />;
       case 'take-test':
         return <ExamConsole />;
       case 'submit-success':
@@ -1198,21 +1335,41 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Background Orbs */}
+      <div className="bg-orb orb-violet"></div>
+      <div className="bg-orb orb-pink"></div>
+      <div className="bg-orb orb-blue"></div>
+
       <nav className="navbar">
-        <div className="nav-logo">
-          🛡️ ProctorTest.io
+        <div className="nav-logo" onClick={() => {
+          if (view !== 'take-test' && view !== 'verify-hardware' && user) {
+            setView(user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
+          }
+        }} style={{ cursor: 'pointer' }}>
+          🛡️ testperfect
         </div>
-        {user && (
-          <div className="nav-links">
-            <span className="user-badge">{user.username} ({user.role})</span>
-            <button className="btn btn-secondary btn-sm" onClick={handleLogout}>Logout</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div className="developer-badge">
+            👨‍💻 Dev: Rupak Reddy
           </div>
-        )}
+          {user && (
+            <div className="nav-links">
+              <span className="user-badge">{user.username} ({user.role})</span>
+              <button className="btn btn-secondary btn-sm" onClick={handleLogout}>Logout</button>
+            </div>
+          )}
+        </div>
       </nav>
       
       <main className="main-content">
         {renderView()}
       </main>
+
+      <footer>
+        <div>
+          &copy; 2026 <strong>testperfect</strong>. All rights reserved. Developed with ❤️ by <strong>Rupak Reddy</strong>.
+        </div>
+      </footer>
     </div>
   );
 }
