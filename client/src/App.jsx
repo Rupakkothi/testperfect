@@ -39,6 +39,8 @@ export default function App() {
   const [createdTests, setCreatedTests] = useState([]);
   const [activeResultsTest, setActiveResultsTest] = useState(null);
   const [testSubmissions, setTestSubmissions] = useState([]);
+  const [editingTest, setEditingTest] = useState(null);
+  const [editDurationInput, setEditDurationInput] = useState('');
 
   // Compiler state on Exam screen
   const [compileInputs, setCompileInputs] = useState({}); // { [questionId]: stdin }
@@ -758,7 +760,10 @@ export default function App() {
                       <td style={{ color: 'var(--text-muted)' }}>{new Date(test.createdAt).toLocaleDateString()}</td>
                       <td style={{ textAlign: 'right', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => handleCopyTestLink(test.id)}>
-                          🔗 Copy Test Link
+                          🔗 Copy Link
+                        </button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditingTest(test); setEditDurationInput(test.duration); }}>
+                          🕒 Edit Time
                         </button>
                         <button className="btn btn-primary btn-sm" onClick={() => handleViewResults(test)}>
                           View Results
@@ -771,6 +776,63 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* Edit Test Settings Modal */}
+        {editingTest && (
+          <div className="modal-overlay">
+            <div className="glass-card modal-content" style={{ border: '1px solid var(--accent-primary)', textAlign: 'left', maxWidth: '400px' }}>
+              <h2 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                🕒 Edit Test Settings
+              </h2>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
+                Modify parameters for: <strong>{editingTest.title}</strong>
+              </p>
+              
+              <div className="form-group">
+                <label className="form-label">Duration (Minutes)</label>
+                <input 
+                  className="form-input" 
+                  type="number" 
+                  required
+                  min="1"
+                  value={editDurationInput}
+                  onChange={e => setEditDurationInput(e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ flex: 1 }}
+                  onClick={() => setEditingTest(null)}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="btn btn-primary" 
+                  style={{ flex: 1 }}
+                  onClick={async () => {
+                    if (!editDurationInput || parseInt(editDurationInput) <= 0) {
+                      return alert("Please enter a valid duration.");
+                    }
+                    try {
+                      await api.put(`/api/tests/${editingTest.id}`, {
+                        duration: parseInt(editDurationInput)
+                      });
+                      alert("Test duration updated successfully!");
+                      setEditingTest(null);
+                      loadEducatorDashboard(); // Refresh table
+                    } catch (err) {
+                      alert("Error updating test: " + err.message);
+                    }
+                  }}
+                >
+                  Save Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

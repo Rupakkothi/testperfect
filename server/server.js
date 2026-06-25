@@ -172,6 +172,31 @@ app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
   res.json(newTest);
 });
 
+// Update Test Settings (Educator Only)
+app.put('/api/tests/:id', authenticateToken, requireEducator, (req, res) => {
+  const { title, description, duration } = req.body;
+  const dbData = db.readDb();
+  const testIdx = dbData.tests.findIndex(t => t.id === req.params.id);
+
+  if (testIdx === -1) {
+    return res.status(404).json({ error: "Test not found." });
+  }
+
+  const test = dbData.tests[testIdx];
+  if (test.createdBy !== req.user.id) {
+    return res.status(403).json({ error: "Access denied. You can only edit tests you created." });
+  }
+
+  if (title !== undefined) test.title = title;
+  if (description !== undefined) test.description = description;
+  if (duration !== undefined) test.duration = parseInt(duration);
+
+  dbData.tests[testIdx] = test;
+  db.writeDb(dbData);
+
+  res.json(test);
+});
+
 // List Tests
 app.get('/api/tests', authenticateToken, (req, res) => {
   const tests = db.getTests();

@@ -60,5 +60,16 @@ export const api = {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong');
     return data;
+  },
+
+  put: async (endpoint, body) => {
+    const res = await fetch(`${API_URL}${endpoint}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    return data;
   }
 };
