@@ -29,8 +29,19 @@ export const setApiUrlOverride = (url) => {
   window.location.reload();
 };
 
+let memoryToken = localStorage.getItem('token') || '';
+
+export const setAuthToken = (token) => {
+  memoryToken = token || '';
+  if (token) {
+    localStorage.setItem('token', token);
+  } else {
+    localStorage.removeItem('token');
+  }
+};
+
 const getHeaders = () => {
-  const token = localStorage.getItem('token');
+  const token = memoryToken || localStorage.getItem('token');
   const headers = {
     'Content-Type': 'application/json',
   };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, API_URL, setApiUrlOverride } from './utils/api';
+import { api, API_URL, setApiUrlOverride, setAuthToken } from './utils/api';
 import WebcamFeed from './components/WebcamFeed';
 import CodeEditor from './components/CodeEditor';
 
@@ -59,7 +59,7 @@ export default function App() {
   // Authentication validation
   useEffect(() => {
     if (token) {
-      localStorage.setItem('token', token);
+      setAuthToken(token);
       api.get('/api/auth/me')
         .then(res => {
           setUser(res.user);
@@ -140,7 +140,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
+    setAuthToken('');
     setToken('');
     setUser(null);
     setView('login');
@@ -174,16 +174,15 @@ export default function App() {
       const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
       const data = await api.post(endpoint, { username, password, role });
       
-      // Save token immediately to localStorage so subsequent API calls retrieve it in headers
-      localStorage.setItem('token', data.token);
+      // Save token synchronously to memory and localStorage
+      setAuthToken(data.token);
       
       setToken(data.token);
       setUser(data.user);
       
-      // Navigate immediately if direct exam link is target
-      if (data.user.role === 'candidate' && targetTestId) {
-        handleStartExam(targetTestId);
-      } else {
+      // Redirection for direct exam links is handled automatically by the useEffect validation.
+      // We only switch to dashboards here if no direct test link is active.
+      if (!targetTestId) {
         setView(data.user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
       }
     } catch (err) {
