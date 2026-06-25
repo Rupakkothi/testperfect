@@ -171,6 +171,10 @@ export default function App() {
     try {
       const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
       const data = await api.post(endpoint, { username, password, role });
+      
+      // Save token immediately to localStorage so subsequent API calls retrieve it in headers
+      localStorage.setItem('token', data.token);
+      
       setToken(data.token);
       setUser(data.user);
       
