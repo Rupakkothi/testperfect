@@ -1,0 +1,14 @@
+{
+  "name": "exam-platform-root",
+  "version": "1.0.0",
+  "description": "Root configuration for Exam Platform with Proctoring and Coding Sandbox",
+  "scripts": {
+    "install:server": "cmd /c \"cd server && npm install\"",
+    "install:client": "cmd /c \"cd client && npm install\"",
+    "start:server": "cmd /c \"cd server && npm start\"",
+    "start:client": "cmd /c \"cd client && npm run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "exam-platform-server",
+  "version": "1.0.0",
+  "description": "Backend API for exam platform with proctoring and coding evaluation",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

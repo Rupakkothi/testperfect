@@ -1,0 +1,23 @@
+# Dependency directories
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Production build outputs
+client/dist/
+
+# Local database persistence (auto-created by backend)
+server/data/
+
+# Environment configurations
+.env
+.env.local
+.env.production
+.env.development
+
+# System / Editor cache
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.gemini/
