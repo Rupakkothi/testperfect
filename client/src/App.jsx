@@ -26,6 +26,7 @@ export default function App() {
   const [newTestTitle, setNewTestTitle] = useState('');
   const [newTestDesc, setNewTestDesc] = useState('');
   const [newTestDuration, setNewTestDuration] = useState(60);
+  const [newTestScheduledAt, setNewTestScheduledAt] = useState('');
   const [newTestQuestions, setNewTestQuestions] = useState([]);
   
   // Test Taking States
@@ -37,6 +38,26 @@ export default function App() {
   const [violations, setViolations] = useState([]); // Array of {type, timestamp, details}
   const [warningMessage, setWarningMessage] = useState('');
   const [isExamCompleted, setIsExamCompleted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
+
+  // AuthPage states moved to top-level to avoid React hook violation
+  const [isRegister, setIsRegister] = useState(false);
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [roleInput, setRoleInput] = useState('candidate');
+
+  // CreateTestPage states moved to top-level to avoid React hook violation
+  const [qText, setQText] = useState('');
+  const [qType, setQType] = useState('mcq');
+  const [qMarks, setQMarks] = useState(5);
+  const [mcqOpts, setMcqOpts] = useState(['', '', '', '']);
+  const [mcqCorrect, setMcqCorrect] = useState(0);
+  const [sampleTestCases, setSampleTestCases] = useState([{ input: '', expectedOutput: '', isSample: true }]);
+  const [hiddenTestCases, setHiddenTestCases] = useState([{ input: '', expectedOutput: '', isSample: false }]);
+
+  // ResultsPage states moved to top-level to avoid React hook violation
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
 
   // Educator View States
   const [createdTests, setCreatedTests] = useState([]);
@@ -44,6 +65,7 @@ export default function App() {
   const [testSubmissions, setTestSubmissions] = useState([]);
   const [editingTest, setEditingTest] = useState(null);
   const [editDurationInput, setEditDurationInput] = useState('');
+  const [editScheduledAtInput, setEditScheduledAtInput] = useState('');
 
   // Compiler state on Exam screen
   const [compileInputs, setCompileInputs] = useState({}); // { [questionId]: stdin }
@@ -75,7 +97,7 @@ export default function App() {
 
   // Timer logic for Exam taking
   useEffect(() => {
-    if (view !== 'take-test' || examTimer <= 0) return;
+    if (view !== 'take-test' || examTimer <= 0 || isSubmitting) return;
     
     const interval = setInterval(() => {
       setExamTimer(prev => {
@@ -90,11 +112,11 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [view, examTimer]);
+  }, [view, examTimer, isSubmitting]);
 
   // Tab change / blur detection (Proctoring)
   useEffect(() => {
-    if (view !== 'take-test') return;
+    if (view !== 'take-test' || isSubmitting) return;
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
@@ -115,10 +137,11 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [view]);
+  }, [view, isSubmitting]);
 
   // Helper to append proctor violations
   const logViolation = (type, details) => {
+    if (isSubmittingRef.current || isSubmitting) return; // Ignore proctor violations during submission phase
     const newViolation = {
       type,
       timestamp: new Date().toISOString(),
@@ -140,6 +163,12 @@ export default function App() {
     setToken('');
     setUser(null);
     setView('login');
+    isSubmittingRef.current = false;
+    setIsSubmitting(false);
+    // Clear auth inputs
+    setUsernameInput('');
+    setPasswordInput('');
+    setIsRegister(false);
   };
 
   // Copy Direct Test URL helper
@@ -204,7 +233,48 @@ export default function App() {
 
   // Educator: Save Test
   const handleSaveTest = async () => {
-    if (!newTestTitle || newTestQuestions.length === 0) {
+    let finalQuestions = [...newTestQuestions];
+
+    // Auto-add current question in progress if it has text and wasn't added yet
+    if (qText.trim()) {
+      const newQ = {
+        type: qType,
+        questionText: qText,
+        marks: qMarks
+      };
+
+      let isValid = true;
+      if (qType === 'mcq') {
+        if (mcqOpts.some(opt => !opt.trim())) {
+          isValid = false;
+        } else {
+          newQ.options = mcqOpts;
+          newQ.correctOption = mcqCorrect;
+        }
+      } else {
+        const allTestCases = [
+          ...sampleTestCases.filter(tc => tc.input.trim() || tc.expectedOutput.trim()),
+          ...hiddenTestCases.filter(tc => tc.input.trim() || tc.expectedOutput.trim())
+        ];
+        if (allTestCases.length === 0) {
+          isValid = false;
+        } else {
+          newQ.testCases = allTestCases;
+          newQ.languages = ['python', 'cpp', 'c', 'java'];
+          newQ.starterCode = {
+            python: `import sys\n\ndef solve():\n    # Read input using sys.stdin.readline() or input()\n    # Print output using print()\n    pass\n\nif __name__ == '__main__':\n    solve()`,
+            cpp: `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Read input using cin\n    // Write output using cout\n    return 0;\n}`,
+            c: `#include <stdio.h>\n\nint main() {\n    // Read using scanf\n    // Write using printf\n    return 0;\n}`,
+            java: `import java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner scanner = new Scanner(System.in);\n        // Read input using scanner\n        // Write output using System.out.println()\n    }\n}`
+          };
+        }
+      }
+      if (isValid) {
+        finalQuestions.push(newQ);
+      }
+    }
+
+    if (!newTestTitle || finalQuestions.length === 0) {
       alert("Please enter a test title and add at least one question.");
       return;
     }
@@ -213,13 +283,21 @@ export default function App() {
         title: newTestTitle,
         description: newTestDesc,
         duration: newTestDuration,
-        questions: newTestQuestions
+        scheduledAt: newTestScheduledAt ? new Date(newTestScheduledAt).toISOString() : null,
+        questions: finalQuestions
       });
       alert("Test created successfully!");
       setNewTestTitle('');
       setNewTestDesc('');
       setNewTestDuration(60);
+      setNewTestScheduledAt('');
       setNewTestQuestions([]);
+      setQText('');
+      setQMarks(5);
+      setMcqOpts(['', '', '', '']);
+      setMcqCorrect(0);
+      setSampleTestCases([{ input: '', expectedOutput: '', isSample: true }]);
+      setHiddenTestCases([{ input: '', expectedOutput: '', isSample: false }]);
       setView('educator-dash');
     } catch (err) {
       alert("Failed to save test: " + err.message);
@@ -275,6 +353,8 @@ export default function App() {
       setCandidateAnswers(stubs);
       setViolations([]);
       setWarningMessage('');
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
       
       // Reset hardware verification status
       setCamVerified(false);
@@ -318,6 +398,7 @@ export default function App() {
 
   // Candidate: Submit Exam
   const handleExamSubmit = async (customViolations) => {
+    if (isSubmittingRef.current || isSubmitting) return;
     const confirmation = window.confirm("Are you sure you want to submit your exam?");
     if (!confirmation) return;
 
@@ -325,10 +406,14 @@ export default function App() {
   };
 
   const triggerAutoSubmit = async (customViolations) => {
+    if (isSubmittingRef.current || isSubmitting) return;
     await executeExamSubmission(customViolations);
   };
 
   const executeExamSubmission = async (customViolations) => {
+    if (isSubmittingRef.current || isSubmitting) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     try {
       const payload = {
         testId: selectedTest.id,
@@ -346,6 +431,9 @@ export default function App() {
       setView('submit-success');
     } catch (err) {
       alert("Error submitting exam: " + err.message);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -353,10 +441,6 @@ export default function App() {
 
   // Auth Card Renderer
   function AuthPage() {
-    const [isRegister, setIsRegister] = useState(false);
-    const [usernameInput, setUsernameInput] = useState('');
-    const [passwordInput, setPasswordInput] = useState('');
-    const [roleInput, setRoleInput] = useState('candidate');
 
     const onSubmit = (e) => {
       e.preventDefault();
@@ -367,14 +451,14 @@ export default function App() {
       <div className="auth-wrapper">
         <div className="glass-card auth-card">
           <h2 style={{ textAlign: 'center', marginBottom: '0.25rem' }}>
-            {isRegister ? 'Register Account' : 'Sign In'}
+            {isRegister ? 'Create Account' : 'Welcome Back'}
           </h2>
           <p style={{ textAlign: 'center', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '2rem' }}>
-            Welcome to <strong>testperfect</strong> platform
+            {isRegister ? 'Join' : 'Sign in to'} <strong style={{ color: 'var(--accent-primary)' }}>TestPerfect</strong> examination platform
           </p>
 
           {targetTestId && (
-            <div style={{ background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.3)', color: '#c084fc', padding: '0.75rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.85rem', textAlign: 'center', fontWeight: 600 }}>
+            <div style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.25)', color: '#a5b4fc', padding: '0.75rem', borderRadius: '10px', marginBottom: '1.5rem', fontSize: '0.85rem', textAlign: 'center', fontWeight: 600 }}>
               🔗 You are logging in to take a direct exam link.
             </div>
           )}
@@ -461,15 +545,6 @@ export default function App() {
 
   // Educator: Create Test View
   function CreateTestPage() {
-    const [qText, setQText] = useState('');
-    const [qType, setQType] = useState('mcq');
-    const [qMarks, setQMarks] = useState(5);
-    
-    const [mcqOpts, setMcqOpts] = useState(['', '', '', '']);
-    const [mcqCorrect, setMcqCorrect] = useState(0);
-
-    const [sampleTestCases, setSampleTestCases] = useState([{ input: '', expectedOutput: '', isSample: true }]);
-    const [hiddenTestCases, setHiddenTestCases] = useState([{ input: '', expectedOutput: '', isSample: false }]);
 
     const addMcqOption = (index, value) => {
       const updated = [...mcqOpts];
@@ -573,6 +648,19 @@ export default function App() {
                 value={newTestDuration}
                 onChange={e => setNewTestDuration(e.target.value)}
               />
+            </div>
+            <div className="form-group">
+              <label className="form-label">📅 Scheduled Date & Time (Optional)</label>
+              <input 
+                className="form-input" 
+                type="datetime-local" 
+                value={newTestScheduledAt}
+                onChange={e => setNewTestScheduledAt(e.target.value)}
+                style={{ colorScheme: 'dark' }}
+              />
+              <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                Leave empty to make the exam available immediately. If set, students can only access the test at or after this time.
+              </small>
             </div>
 
             <div style={{ marginTop: '2rem' }}>
@@ -743,30 +831,46 @@ export default function App() {
                     <th>Test Title</th>
                     <th>Questions</th>
                     <th>Duration</th>
+                    <th>Scheduled At</th>
                     <th>Date Released</th>
                     <th style={{ textAlignment: 'right' }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {createdTests.map(test => (
+                  {createdTests.map(test => {
+                    const isScheduled = !!test.scheduledAt;
+                    const scheduledDate = isScheduled ? new Date(test.scheduledAt) : null;
+                    const isPast = scheduledDate && scheduledDate <= new Date();
+                    return (
                     <tr key={test.id}>
                       <td style={{ fontWeight: 600 }}>{test.title}</td>
                       <td>{test.questions.length}</td>
                       <td>{test.duration} min</td>
+                      <td>
+                        {isScheduled ? (
+                          <span style={{ color: isPast ? 'var(--accent-green, #4ade80)' : 'var(--accent-warning, #facc15)', fontWeight: 500, fontSize: '0.85rem' }}>
+                            {isPast ? '✅ ' : '⏳ '}
+                            {scheduledDate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Always Open</span>
+                        )}
+                      </td>
                       <td style={{ color: 'var(--text-muted)' }}>{new Date(test.createdAt).toLocaleDateString()}</td>
                       <td style={{ textAlign: 'right', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => handleCopyTestLink(test.id)}>
                           🔗 Copy Link
                         </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditingTest(test); setEditDurationInput(test.duration); }}>
-                          🕒 Edit Time
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditingTest(test); setEditDurationInput(test.duration); setEditScheduledAtInput(test.scheduledAt ? new Date(test.scheduledAt).toISOString().slice(0, 16) : ''); }}>
+                          ⚙️ Edit Settings
                         </button>
                         <button className="btn btn-primary btn-sm" onClick={() => handleViewResults(test)}>
                           View Results
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -778,7 +882,7 @@ export default function App() {
           <div className="modal-overlay">
             <div className="glass-card modal-content" style={{ border: '1px solid var(--accent-primary)', textAlign: 'left', maxWidth: '400px' }}>
               <h2 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                🕒 Edit Test Settings
+                ⚙️ Edit Test Settings
               </h2>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
                 Modify parameters for: <strong>{editingTest.title}</strong>
@@ -794,6 +898,20 @@ export default function App() {
                   value={editDurationInput}
                   onChange={e => setEditDurationInput(e.target.value)}
                 />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">📅 Scheduled Date & Time</label>
+                <input 
+                  className="form-input" 
+                  type="datetime-local" 
+                  value={editScheduledAtInput}
+                  onChange={e => setEditScheduledAtInput(e.target.value)}
+                  style={{ colorScheme: 'dark' }}
+                />
+                <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                  Leave empty to make the exam always available. If set, students can only start the exam at or after this time.
+                </small>
               </div>
 
               <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
@@ -813,9 +931,10 @@ export default function App() {
                     }
                     try {
                       await api.put(`/api/tests/${editingTest.id}`, {
-                        duration: parseInt(editDurationInput)
+                        duration: parseInt(editDurationInput),
+                        scheduledAt: editScheduledAtInput ? new Date(editScheduledAtInput).toISOString() : null
                       });
-                      alert("Test duration updated successfully!");
+                      alert("Test settings updated successfully!");
                       setEditingTest(null);
                       loadEducatorDashboard(); // Refresh table
                     } catch (err) {
@@ -835,7 +954,6 @@ export default function App() {
 
   // Educator: Submissions Results View
   function ResultsPage() {
-    const [selectedSubmission, setSelectedSubmission] = useState(null);
 
     return (
       <div className="glass-card">
@@ -1001,23 +1119,58 @@ export default function App() {
                     <th>Questions</th>
                     <th>Total Marks</th>
                     <th>Time Limit</th>
+                    <th>Scheduled At</th>
                     <th style={{ textAlignment: 'right' }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {availableTests.map(test => (
-                    <tr key={test.id}>
+                  {availableTests.map(test => {
+                    const isScheduled = !!test.scheduledAt;
+                    const scheduledDate = isScheduled ? new Date(test.scheduledAt) : null;
+                    const isAvailableNow = !isScheduled || scheduledDate <= new Date();
+                    const timeUntil = scheduledDate && !isAvailableNow
+                      ? (() => {
+                          const diff = scheduledDate - new Date();
+                          const hours = Math.floor(diff / 3600000);
+                          const mins = Math.ceil((diff % 3600000) / 60000);
+                          return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+                        })()
+                      : null;
+                    return (
+                    <tr key={test.id} style={{ opacity: isAvailableNow ? 1 : 0.65 }}>
                       <td style={{ fontWeight: 600 }}>{test.title}</td>
                       <td>{test.questionCount} Questions</td>
                       <td>{test.totalMarks} Marks</td>
                       <td>{test.duration} min</td>
+                      <td>
+                        {isScheduled ? (
+                          <div style={{ fontSize: '0.85rem' }}>
+                            <div style={{ color: isAvailableNow ? 'var(--accent-green, #4ade80)' : 'var(--accent-warning, #facc15)', fontWeight: 500 }}>
+                              {isAvailableNow ? '✅ Open Now' : '🔒 Locked'}
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}>
+                              {scheduledDate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                              {timeUntil && ` (in ${timeUntil})`}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--accent-green, #4ade80)', fontSize: '0.85rem', fontWeight: 500 }}>✅ Always Open</span>
+                        )}
+                      </td>
                       <td style={{ textAlign: 'right' }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => handleStartExam(test.id, user)}>
-                          Start Exam
-                        </button>
+                        {isAvailableNow ? (
+                          <button className="btn btn-primary btn-sm" onClick={() => handleStartExam(test.id, user)}>
+                            Start Exam
+                          </button>
+                        ) : (
+                          <button className="btn btn-secondary btn-sm" disabled style={{ cursor: 'not-allowed', opacity: 0.5 }}>
+                            🔒 Not Yet Available
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1118,6 +1271,16 @@ export default function App() {
             >
               {camVerified && micVerified ? 'Verify & Start Exam' : 'Awaiting Hardware Permission...'}
             </button>
+            
+            {!(camVerified && micVerified) && (
+              <button
+                className="btn btn-secondary"
+                style={{ width: '100%', marginTop: '0.75rem', padding: '0.75rem', fontSize: '0.9rem', opacity: 0.8 }}
+                onClick={handleProceedToExam}
+              >
+                ⚠️ Bypass Device Check (Demo/Testing Mode)
+              </button>
+            )}
           </div>
 
           {/* Media Stream Verification Preview */}
@@ -1310,8 +1473,9 @@ export default function App() {
           <WebcamFeed 
             onAudioAlert={(msg) => logViolation('audio_alert', msg)}
             onStatusChange={(status) => {
-              if (!status.camera) logViolation('camera_inactive', 'Candidate camera stream blocked / errored.');
-              if (!status.mic) logViolation('mic_inactive', 'Candidate mic input blocked / errored.');
+              // Only log inactive violations if the devices were successfully verified during setup
+              if (camVerified && !status.camera) logViolation('camera_inactive', 'Candidate camera stream blocked / errored.');
+              if (micVerified && !status.mic) logViolation('mic_inactive', 'Candidate mic input blocked / errored.');
             }}
           />
 
@@ -1319,8 +1483,9 @@ export default function App() {
             className="btn btn-primary" 
             style={{ width: '100%', padding: '1rem', fontSize: '1.1rem' }}
             onClick={() => handleExamSubmit()}
+            disabled={isSubmitting}
           >
-            Submit Exam
+            {isSubmitting ? 'Submitting...' : 'Submit Exam'}
           </button>
         </div>
 
@@ -1408,11 +1573,11 @@ export default function App() {
             setView(user.role === 'educator' ? 'educator-dash' : 'candidate-dash');
           }
         }} style={{ cursor: 'pointer' }}>
-          🛡️ testperfect
+          ✦ TestPerfect
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div className="developer-badge">
-            👨‍💻 Dev: Rupak Reddy
+            ⚡ Built by Rupak Reddy
           </div>
           {user && (
             <div className="nav-links">
@@ -1429,7 +1594,7 @@ export default function App() {
 
       <footer>
         <div>
-          &copy; 2026 <strong>testperfect</strong>. All rights reserved. Developed with ❤️ by <strong>Rupak Reddy</strong>.
+          &copy; 2026 <strong>TestPerfect</strong> — Secure Online Examination Platform. Crafted with ❤️ by <strong>Rupak Reddy</strong>.
         </div>
       </footer>
     </div>

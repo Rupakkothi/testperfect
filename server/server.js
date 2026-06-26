@@ -97,7 +97,7 @@ app.post('/api/auth/register', (req, res) => {
   }
 
   const users = db.getUsers();
-  if (users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
+  if (users.find(u => u.username && u.username.toLowerCase() === username.toLowerCase())) {
     return res.status(400).json({ error: "Username already exists" });
   }
 
@@ -123,7 +123,7 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const users = db.getUsers();
-  const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  const user = users.find(u => u.username && u.username.toLowerCase() === username.toLowerCase());
   
   if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
     return res.status(400).json({ error: "Invalid username or password" });
@@ -143,7 +143,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 
 // Create Test (Educator Only)
 app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
-  const { title, description, duration, questions } = req.body;
+  const { title, description, duration, questions, scheduledAt } = req.body;
   if (!title || !duration || !questions || !Array.isArray(questions)) {
     return res.status(400).json({ error: "Missing required test fields." });
   }
@@ -153,6 +153,7 @@ app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
     title,
     description: description || "",
     duration: parseInt(duration),
+    scheduledAt: scheduledAt || null, // ISO date-time string, null means always available
     createdBy: req.user.id,
     createdAt: new Date().toISOString(),
     questions: questions.map(q => ({
@@ -174,7 +175,7 @@ app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
 
 // Update Test Settings (Educator Only)
 app.put('/api/tests/:id', authenticateToken, requireEducator, (req, res) => {
-  const { title, description, duration } = req.body;
+  const { title, description, duration, scheduledAt } = req.body;
   const dbData = db.readDb();
   const testIdx = dbData.tests.findIndex(t => t.id === req.params.id);
 
@@ -190,6 +191,7 @@ app.put('/api/tests/:id', authenticateToken, requireEducator, (req, res) => {
   if (title !== undefined) test.title = title;
   if (description !== undefined) test.description = description;
   if (duration !== undefined) test.duration = parseInt(duration);
+  if (scheduledAt !== undefined) test.scheduledAt = scheduledAt || null;
 
   dbData.tests[testIdx] = test;
   db.writeDb(dbData);
@@ -210,6 +212,7 @@ app.get('/api/tests', authenticateToken, (req, res) => {
       title: t.title,
       description: t.description,
       duration: t.duration,
+      scheduledAt: t.scheduledAt || null,
       questionCount: t.questions.length,
       totalMarks: t.questions.reduce((sum, q) => sum + q.marks, 0)
     }));
@@ -225,6 +228,20 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
 
   if (req.user.role === 'educator') {
     return res.json(test);
+  }
+
+  // Time-gate: Candidates can only access the test at or after the scheduled time
+  if (test.scheduledAt) {
+    const now = new Date();
+    const scheduled = new Date(test.scheduledAt);
+    if (now < scheduled) {
+      const diffMs = scheduled - now;
+      const diffMins = Math.ceil(diffMs / 60000);
+      return res.status(403).json({
+        error: `This exam is not yet available. It is scheduled for ${scheduled.toLocaleString()}. Please try again in ${diffMins} minute(s).`,
+        scheduledAt: test.scheduledAt
+      });
+    }
   }
 
   // Sanitized test details for Candidate: hide correct answers and hidden test cases!
@@ -243,7 +260,7 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
       sanitized.languages = q.languages;
       sanitized.starterCode = q.starterCode;
       // Return ONLY sample test cases (isSample === true)
-      sanitized.testCases = q.testCases.filter(tc => tc.isSample === true);
+      sanitized.testCases = (q.testCases || []).filter(tc => tc.isSample === true);
     }
     return sanitized;
   });
@@ -253,6 +270,7 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
     title: test.title,
     description: test.description,
     duration: test.duration,
+    scheduledAt: test.scheduledAt || null,
     questions: sanitizedQuestions
   });
 });
@@ -303,6 +321,13 @@ app.post('/api/submissions', authenticateToken, async (req, res) => {
   const test = tests.find(t => t.id === testId);
   if (!test) return res.status(404).json({ error: "Test not found." });
 
+  // Prevent duplicate submissions
+  const submissions = db.getSubmissions();
+  const existingSubmission = submissions.find(s => s.candidateId === req.user.id && s.testId === testId);
+  if (existingSubmission) {
+    return res.status(400).json({ error: "You have already submitted this exam." });
+  }
+
   let totalScore = 0;
   let testTotalMarks = 0;
   const gradedAnswers = {};
@@ -340,25 +365,28 @@ app.post('/api/submissions', authenticateToken, async (req, res) => {
       const totalTestCases = question.testCases.length;
 
       // Run code against ALL test cases (both Sample and Hidden)
-      // Since executing multiple requests sequentially could time out Express, we run them concurrently
-      const execPromises = question.testCases.map(async (tc) => {
+      // Since executing multiple requests concurrently could time out Express and hit Judge0 rate limits, we run them sequentially
+      for (const tc of question.testCases) {
         const languageId = LANGUAGE_MAPPING[language.toLowerCase()];
-        if (!languageId) return false;
+        if (!languageId) continue;
         
         try {
           const runRes = await executeCodeWithJudge0(languageId, code, tc.input);
-          const actualOutput = (runRes.stdout || "").trim();
-          const expected = (tc.expectedOutput || "").trim();
           
-          // Compare outputs (case and whitespace insensitive comparison for standard tests)
-          return actualOutput.replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n');
+          // Verify code compilation/execution was successful (Judge0 status ID 3 is "Accepted")
+          if (runRes.status && runRes.status.id === 3) {
+            const actualOutput = (runRes.stdout || "").trim();
+            const expected = (tc.expectedOutput || "").trim();
+            
+            // Compare outputs (case and whitespace insensitive comparison for standard tests)
+            if (actualOutput.replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n')) {
+              testCasesPassed++;
+            }
+          }
         } catch (e) {
-          return false;
+          // Ignore error and continue
         }
-      });
-
-      const results = await Promise.all(execPromises);
-      testCasesPassed = results.filter(passed => passed === true).length;
+      }
 
       // Calculate partial marks based on percentage of test cases passed
       const scoreFraction = totalTestCases > 0 ? (testCasesPassed / totalTestCases) : 0;
