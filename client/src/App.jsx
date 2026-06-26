@@ -22,11 +22,16 @@ export default function App() {
   const [camVerified, setCamVerified] = useState(false);
   const [micVerified, setMicVerified] = useState(false);
 
+  // Theme Mode
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+
   // Test Creation States
   const [newTestTitle, setNewTestTitle] = useState('');
   const [newTestDesc, setNewTestDesc] = useState('');
   const [newTestDuration, setNewTestDuration] = useState(60);
   const [newTestScheduledAt, setNewTestScheduledAt] = useState('');
+  const [newTestScheduledEndAt, setNewTestScheduledEndAt] = useState('');
+  const [newTestAllowedTabSwitches, setNewTestAllowedTabSwitches] = useState(3);
   const [newTestQuestions, setNewTestQuestions] = useState([]);
   
   // Test Taking States
@@ -34,6 +39,8 @@ export default function App() {
   const [selectedTest, setSelectedTest] = useState(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [candidateAnswers, setCandidateAnswers] = useState({}); // { [questionId]: { selectedOption, code, language } }
+  const [submittedAnswers, setSubmittedAnswers] = useState({}); // { [questionId]: true }
+  const [questionSubmitResults, setQuestionSubmitResults] = useState({}); // { [questionId]: { loading: false, passedCount, totalCount, results: [] } }
   const [examTimer, setExamTimer] = useState(0); // in seconds
   const [violations, setViolations] = useState([]); // Array of {type, timestamp, details}
   const [warningMessage, setWarningMessage] = useState('');
@@ -66,11 +73,23 @@ export default function App() {
   const [editingTest, setEditingTest] = useState(null);
   const [editDurationInput, setEditDurationInput] = useState('');
   const [editScheduledAtInput, setEditScheduledAtInput] = useState('');
+  const [editScheduledEndAtInput, setEditScheduledEndAtInput] = useState('');
+  const [editAllowedTabSwitchesInput, setEditAllowedTabSwitchesInput] = useState(3);
 
   // Compiler state on Exam screen
   const [compileInputs, setCompileInputs] = useState({}); // { [questionId]: stdin }
   const [compileOutputs, setCompileOutputs] = useState({}); // { [questionId]: { stdout, stderr, status, time } }
   const [isRunningCode, setIsRunningCode] = useState(false);
+
+  // Sync theme class
+  useEffect(() => {
+    if (theme === 'light') {
+      document.body.classList.add('light-theme');
+    } else {
+      document.body.classList.remove('light-theme');
+    }
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
 
 
@@ -150,8 +169,9 @@ export default function App() {
     setViolations(prev => {
       const updated = [...prev, newViolation];
       const tabSwitches = updated.filter(v => v.type === 'tab_switch' || v.type === 'window_blur').length;
-      if (tabSwitches >= 3) {
-        alert("Maximum focus-loss violations exceeded. Your exam is submitting automatically.");
+      const limit = selectedTest?.allowedTabSwitches !== undefined ? selectedTest.allowedTabSwitches : 3;
+      if (tabSwitches >= limit) {
+        alert(`Maximum focus-loss violations (${limit}) exceeded. Your exam is submitting automatically.`);
         triggerAutoSubmit(updated);
       }
       return updated;
@@ -284,6 +304,8 @@ export default function App() {
         description: newTestDesc,
         duration: newTestDuration,
         scheduledAt: newTestScheduledAt ? new Date(newTestScheduledAt).toISOString() : null,
+        scheduledEndAt: newTestScheduledEndAt ? new Date(newTestScheduledEndAt).toISOString() : null,
+        allowedTabSwitches: newTestAllowedTabSwitches,
         questions: finalQuestions
       });
       alert("Test created successfully!");
@@ -291,6 +313,8 @@ export default function App() {
       setNewTestDesc('');
       setNewTestDuration(60);
       setNewTestScheduledAt('');
+      setNewTestScheduledEndAt('');
+      setNewTestAllowedTabSwitches(3);
       setNewTestQuestions([]);
       setQText('');
       setQMarks(5);
@@ -393,6 +417,68 @@ export default function App() {
       alert("Execution error: " + err.message);
     } finally {
       setIsRunningCode(false);
+    }
+  };
+
+  // Candidate: Submit & evaluate individual coding question against sample test cases
+  const handleSubmitQuestionCode = async (questionId) => {
+    const q = selectedTest.questions.find(quest => quest.id === questionId);
+    const ans = candidateAnswers[questionId];
+    if (!ans || !ans.code) {
+      alert("Please write some code before submitting.");
+      return;
+    }
+
+    setQuestionSubmitResults(prev => ({
+      ...prev,
+      [questionId]: { loading: true, passedCount: 0, totalCount: q.testCases.length, results: [] }
+    }));
+
+    let passed = 0;
+    const results = [];
+
+    try {
+      for (let i = 0; i < q.testCases.length; i++) {
+        const tc = q.testCases[i];
+        const res = await api.post('/api/compiler/run', {
+          code: ans.code,
+          language: ans.language,
+          stdin: tc.input
+        });
+
+        let isPass = false;
+        let actual = '';
+        if (res.status && res.status.id === 3) {
+          actual = (res.stdout || "").trim();
+          const expected = (tc.expectedOutput || "").trim();
+          if (actual.replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n')) {
+            passed++;
+            isPass = true;
+          }
+        }
+
+        results.push({
+          input: tc.input,
+          expected: tc.expectedOutput,
+          actual: res.compile_output || res.stderr || res.stdout || '[Empty Output]',
+          status: res.status?.description || 'Failed',
+          isPass
+        });
+      }
+
+      setQuestionSubmitResults(prev => ({
+        ...prev,
+        [questionId]: { loading: false, passedCount: passed, totalCount: q.testCases.length, results }
+      }));
+
+      setSubmittedAnswers(prev => ({ ...prev, [questionId]: true }));
+      alert(`Code submitted! Passed ${passed} of ${q.testCases.length} sample test cases.`);
+    } catch (err) {
+      alert("Error evaluating code: " + err.message);
+      setQuestionSubmitResults(prev => ({
+        ...prev,
+        [questionId]: { loading: false, passedCount: 0, totalCount: q.testCases.length, results: [] }
+      }));
     }
   };
 
@@ -656,10 +742,39 @@ export default function App() {
                 type="datetime-local" 
                 value={newTestScheduledAt}
                 onChange={e => setNewTestScheduledAt(e.target.value)}
-                style={{ colorScheme: 'dark' }}
+                style={{ colorScheme: theme === 'light' ? 'light' : 'dark' }}
               />
               <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
                 Leave empty to make the exam available immediately. If set, students can only access the test at or after this time.
+              </small>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">📅 Closing Date & Time (Optional)</label>
+              <input 
+                className="form-input" 
+                type="datetime-local" 
+                value={newTestScheduledEndAt}
+                onChange={e => setNewTestScheduledEndAt(e.target.value)}
+                style={{ colorScheme: theme === 'light' ? 'light' : 'dark' }}
+              />
+              <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                Leave empty if the exam does not close. If set, candidates cannot start past this closing time.
+              </small>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">🛡️ Max Focus-loss Violations Allowed</label>
+              <input 
+                className="form-input" 
+                type="number" 
+                min="1"
+                max="15"
+                value={newTestAllowedTabSwitches}
+                onChange={e => setNewTestAllowedTabSwitches(parseInt(e.target.value) || 3)}
+              />
+              <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                How many times a candidate is allowed to switch browser tabs before the exam is auto-submitted.
               </small>
             </div>
 
@@ -861,7 +976,13 @@ export default function App() {
                         <button className="btn btn-secondary btn-sm" onClick={() => handleCopyTestLink(test.id)}>
                           🔗 Copy Link
                         </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditingTest(test); setEditDurationInput(test.duration); setEditScheduledAtInput(test.scheduledAt ? new Date(test.scheduledAt).toISOString().slice(0, 16) : ''); }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => {
+                          setEditingTest(test);
+                          setEditDurationInput(test.duration);
+                          setEditScheduledAtInput(test.scheduledAt ? new Date(test.scheduledAt).toISOString().slice(0, 16) : '');
+                          setEditScheduledEndAtInput(test.scheduledEndAt ? new Date(test.scheduledEndAt).toISOString().slice(0, 16) : '');
+                          setEditAllowedTabSwitchesInput(test.allowedTabSwitches !== undefined ? test.allowedTabSwitches : 3);
+                        }}>
                           ⚙️ Edit Settings
                         </button>
                         <button className="btn btn-primary btn-sm" onClick={() => handleViewResults(test)}>
@@ -907,10 +1028,39 @@ export default function App() {
                   type="datetime-local" 
                   value={editScheduledAtInput}
                   onChange={e => setEditScheduledAtInput(e.target.value)}
-                  style={{ colorScheme: 'dark' }}
+                  style={{ colorScheme: theme === 'light' ? 'light' : 'dark' }}
                 />
                 <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
                   Leave empty to make the exam always available. If set, students can only start the exam at or after this time.
+                </small>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">📅 Closing Date & Time</label>
+                <input 
+                  className="form-input" 
+                  type="datetime-local" 
+                  value={editScheduledEndAtInput}
+                  onChange={e => setEditScheduledEndAtInput(e.target.value)}
+                  style={{ colorScheme: theme === 'light' ? 'light' : 'dark' }}
+                />
+                <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                  Leave empty if the exam does not close. If set, candidates cannot start past this closing time.
+                </small>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">🛡️ Max Focus-loss Violations Allowed</label>
+                <input 
+                  className="form-input" 
+                  type="number" 
+                  min="1"
+                  max="15"
+                  value={editAllowedTabSwitchesInput}
+                  onChange={e => setEditAllowedTabSwitchesInput(parseInt(e.target.value) || 3)}
+                />
+                <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.3rem' }}>
+                  How many times a candidate is allowed to switch browser tabs before the exam is auto-submitted.
                 </small>
               </div>
 
@@ -932,7 +1082,9 @@ export default function App() {
                     try {
                       await api.put(`/api/tests/${editingTest.id}`, {
                         duration: parseInt(editDurationInput),
-                        scheduledAt: editScheduledAtInput ? new Date(editScheduledAtInput).toISOString() : null
+                        scheduledAt: editScheduledAtInput ? new Date(editScheduledAtInput).toISOString() : null,
+                        scheduledEndAt: editScheduledEndAtInput ? new Date(editScheduledEndAtInput).toISOString() : null,
+                        allowedTabSwitches: editAllowedTabSwitchesInput
                       });
                       alert("Test settings updated successfully!");
                       setEditingTest(null);
@@ -1127,8 +1279,9 @@ export default function App() {
                   {availableTests.map(test => {
                     const isScheduled = !!test.scheduledAt;
                     const scheduledDate = isScheduled ? new Date(test.scheduledAt) : null;
-                    const isAvailableNow = !isScheduled || scheduledDate <= new Date();
-                    const timeUntil = scheduledDate && !isAvailableNow
+                    const isExpired = test.scheduledEndAt && new Date(test.scheduledEndAt) < new Date();
+                    const isAvailableNow = (!isScheduled || scheduledDate <= new Date()) && !isExpired;
+                    const timeUntil = scheduledDate && !isAvailableNow && !isExpired
                       ? (() => {
                           const diff = scheduledDate - new Date();
                           const hours = Math.floor(diff / 3600000);
@@ -1143,7 +1296,16 @@ export default function App() {
                       <td>{test.totalMarks} Marks</td>
                       <td>{test.duration} min</td>
                       <td>
-                        {isScheduled ? (
+                        {isExpired ? (
+                          <div style={{ fontSize: '0.85rem' }}>
+                            <div style={{ color: 'var(--danger)', fontWeight: 500 }}>
+                              🚫 Closed / Expired
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}>
+                              Closed: {new Date(test.scheduledEndAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                            </div>
+                          </div>
+                        ) : isScheduled ? (
                           <div style={{ fontSize: '0.85rem' }}>
                             <div style={{ color: isAvailableNow ? 'var(--accent-green, #4ade80)' : 'var(--accent-warning, #facc15)', fontWeight: 500 }}>
                               {isAvailableNow ? '✅ Open Now' : '🔒 Locked'}
@@ -1152,13 +1314,29 @@ export default function App() {
                               {scheduledDate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                               {timeUntil && ` (in ${timeUntil})`}
                             </div>
+                            {test.scheduledEndAt && (
+                              <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}>
+                                Closes: {new Date(test.scheduledEndAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                              </div>
+                            )}
                           </div>
                         ) : (
-                          <span style={{ color: 'var(--accent-green, #4ade80)', fontSize: '0.85rem', fontWeight: 500 }}>✅ Always Open</span>
+                          <div style={{ fontSize: '0.85rem' }}>
+                            <span style={{ color: 'var(--accent-green, #4ade80)', fontWeight: 500 }}>✅ Always Open</span>
+                            {test.scheduledEndAt && (
+                              <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}>
+                                Closes: {new Date(test.scheduledEndAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td style={{ textAlign: 'right' }}>
-                        {isAvailableNow ? (
+                        {isExpired ? (
+                          <button className="btn btn-secondary btn-sm" disabled style={{ cursor: 'not-allowed', opacity: 0.5 }}>
+                            🚫 Closed
+                          </button>
+                        ) : isAvailableNow ? (
                           <button className="btn btn-primary btn-sm" onClick={() => handleStartExam(test.id, user)}>
                             Start Exam
                           </button>
@@ -1193,8 +1371,17 @@ export default function App() {
       }
       
       // Start countdown timer
-      setExamTimer(selectedTest.duration * 60);
+      let durationSecs = selectedTest.duration * 60;
+      if (selectedTest.scheduledEndAt) {
+        const now = new Date();
+        const endTime = new Date(selectedTest.scheduledEndAt);
+        const timeTillEndSecs = Math.max(0, Math.floor((endTime - now) / 1000));
+        durationSecs = Math.min(durationSecs, timeTillEndSecs);
+      }
+      setExamTimer(durationSecs);
       setViolations([]);
+      setSubmittedAnswers({});
+      setQuestionSubmitResults({});
       // Start testconsole
       setView('take-test');
     };
@@ -1337,6 +1524,34 @@ export default function App() {
 
     return (
       <div className="exam-layout">
+        {/* Top Exam Header */}
+        <div className="exam-header">
+          <div className="exam-header-info">
+            <h2>{selectedTest.title}</h2>
+            <div className="exam-header-meta">
+              <span>👤 Candidate: <strong>{user?.username}</strong></span>
+              <span>•</span>
+              <span>🛡️ Focus Switch Limit: <strong>{selectedTest.allowedTabSwitches !== undefined ? selectedTest.allowedTabSwitches : 3} Max</strong></span>
+            </div>
+          </div>
+          <div className="exam-header-right">
+            <div className="exam-timer-display">
+              <span className="exam-timer-label">TIME REMAINING</span>
+              <span className={`exam-timer-val ${examTimer < 300 ? 'warning' : ''}`}>
+                {formatTime(examTimer)}
+              </span>
+            </div>
+            <button 
+              className="btn btn-danger" 
+              style={{ padding: '0.8rem 1.8rem', fontSize: '1rem', fontWeight: 700 }}
+              onClick={() => handleExamSubmit()}
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Submitting...' : 'Submit Test'}
+            </button>
+          </div>
+        </div>
+
         {/* Left Side: Questions navigator */}
         <div className="exam-sidebar-left glass-card" style={{ padding: '1.5rem' }}>
           <div className="question-navigator">
@@ -1344,11 +1559,23 @@ export default function App() {
             <div className="question-grid">
               {selectedTest.questions.map((question, idx) => {
                 const ans = candidateAnswers[question.id];
-                const isAnswered = ans && (ans.selectedOption !== null && ans.selectedOption !== undefined || (question.type === 'coding' && ans.code && ans.code.length > 50));
+                const isSubmitted = submittedAnswers[question.id];
+                const hasDraft = ans && (
+                  ans.selectedOption !== null && ans.selectedOption !== undefined || 
+                  (question.type === 'coding' && ans.code && ans.code.trim().length > 50)
+                );
+                
+                let btnClass = '';
+                if (isSubmitted) {
+                  btnClass = 'answered';
+                } else if (hasDraft) {
+                  btnClass = 'draft';
+                }
+
                 return (
                   <button 
                     key={question.id}
-                    className={`q-nav-btn ${idx === currentQuestionIndex ? 'active' : ''} ${isAnswered ? 'answered' : ''}`}
+                    className={`q-nav-btn ${idx === currentQuestionIndex ? 'active' : ''} ${btnClass}`}
                     onClick={() => setCurrentQuestionIndex(idx)}
                   >
                     {idx + 1}
@@ -1358,8 +1585,8 @@ export default function App() {
             </div>
             
             <div style={{ marginTop: '2rem', fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-              <div>🟢 Green: Attempted</div>
-              <div>🔵 Violet: Current</div>
+              <div>🟢 Green: Submitted & Saved</div>
+              <div>🔵 Blue: Unsaved Draft</div>
               <div>⚫ Grey: Unattempted</div>
             </div>
           </div>
@@ -1377,17 +1604,34 @@ export default function App() {
           </div>
 
           {q.type === 'mcq' ? (
-            <div className="mcq-container">
-              {q.options.map((opt, idx) => (
-                <div 
-                  key={idx} 
-                  className={`mcq-option-card ${answer.selectedOption === idx ? 'selected' : ''}`}
-                  onClick={() => handleMcqSelect(idx)}
+            <div>
+              <div className="mcq-container">
+                {q.options.map((opt, idx) => (
+                  <div 
+                    key={idx} 
+                    className={`mcq-option-card ${answer.selectedOption === idx ? 'selected' : ''}`}
+                    onClick={() => handleMcqSelect(idx)}
+                  >
+                    <div className="mcq-radio" />
+                    <span className="mcq-text">{opt}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'flex-start' }}>
+                <button 
+                  className={`btn ${submittedAnswers[q.id] ? 'btn-secondary' : 'btn-success'}`}
+                  onClick={() => {
+                    if (answer.selectedOption === null || answer.selectedOption === undefined) {
+                      alert("Please select an option first.");
+                      return;
+                    }
+                    setSubmittedAnswers(prev => ({ ...prev, [q.id]: true }));
+                    alert("MCQ Answer saved successfully!");
+                  }}
                 >
-                  <div className="mcq-radio" />
-                  <span className="mcq-text">{opt}</span>
-                </div>
-              ))}
+                  {submittedAnswers[q.id] ? '✓ Answer Saved & Submitted' : 'Submit & Save Answer'}
+                </button>
+              </div>
             </div>
           ) : (
             <div>
@@ -1412,7 +1656,7 @@ export default function App() {
                       onChange={e => setCompileInputs({ ...compileInputs, [q.id]: e.target.value })}
                     />
                   </div>
-                  <div style={{ alignSelf: 'flex-end' }}>
+                  <div style={{ alignSelf: 'flex-end', display: 'flex', gap: '0.75rem' }}>
                     <button 
                       className="btn btn-success" 
                       onClick={() => handleRunCode(q.id)}
@@ -1420,8 +1664,38 @@ export default function App() {
                     >
                       {isRunningCode ? 'Compiling...' : 'Run Code'}
                     </button>
+                    <button 
+                      className={`btn ${submittedAnswers[q.id] ? 'btn-secondary' : 'btn-primary'}`}
+                      onClick={() => handleSubmitQuestionCode(q.id)}
+                      disabled={questionSubmitResults[q.id]?.loading}
+                    >
+                      {questionSubmitResults[q.id]?.loading ? 'Evaluating...' : submittedAnswers[q.id] ? '✓ Code Submitted' : 'Submit & Save Code'}
+                    </button>
                   </div>
                 </div>
+
+                {/* Single Question Submission Sample Test Case Results Panel */}
+                {questionSubmitResults[q.id] && !questionSubmitResults[q.id].loading && questionSubmitResults[q.id].results?.length > 0 && (
+                  <div className="compiler-output-panel" style={{ borderLeft: '4px solid var(--success)', marginTop: '1.25rem' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '0.5rem', color: '#4ade80' }}>
+                      ✓ Sample Test Cases Evaluation: {questionSubmitResults[q.id].passedCount} / {questionSubmitResults[q.id].totalCount} Passed
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {questionSubmitResults[q.id].results.map((result, idx) => (
+                        <div key={idx} style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px', fontSize: '0.78rem' }}>
+                          <span style={{ fontWeight: 600, color: result.isPass ? '#4ade80' : '#f87171' }}>
+                            [Test Case {idx + 1}]: {result.isPass ? 'PASS' : 'FAIL'}
+                          </span>
+                          {!result.isPass && (
+                            <div style={{ color: 'var(--text-muted)', marginTop: '0.25rem', fontFamily: 'var(--font-mono)' }}>
+                              Input: "{result.input}" | Expected: "{result.expected}" | Actual: "{result.actual}"
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {compileOutputs[q.id] && (
                   <div className="compiler-output-panel">
@@ -1461,15 +1735,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Side: Webcam feed, timer, Submit button */}
+        {/* Right Side: Webcam proctor preview */}
         <div className="exam-sidebar-right proctor-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div className="glass-card" style={{ padding: '1.25rem', textAlign: 'center', border: '1px solid rgba(139, 92, 246, 0.2)' }}>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 700, letterSpacing: '0.05rem' }}>TIME REMAINING</div>
-            <div style={{ fontSize: '2.5rem', fontWeight: 800, color: examTimer < 300 ? 'var(--danger)' : 'var(--accent-primary)' }}>
-              {formatTime(examTimer)}
-            </div>
-          </div>
-
           <WebcamFeed 
             onAudioAlert={(msg) => logViolation('audio_alert', msg)}
             onStatusChange={(status) => {
@@ -1478,15 +1745,6 @@ export default function App() {
               if (micVerified && !status.mic) logViolation('mic_inactive', 'Candidate mic input blocked / errored.');
             }}
           />
-
-          <button 
-            className="btn btn-primary" 
-            style={{ width: '100%', padding: '1rem', fontSize: '1.1rem' }}
-            onClick={() => handleExamSubmit()}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? 'Submitting...' : 'Submit Exam'}
-          </button>
         </div>
 
         {/* Overlay popup warnings */}
@@ -1576,6 +1834,13 @@ export default function App() {
           ✦ TestPerfect
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <button 
+            className="theme-toggle-btn"
+            onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+          >
+            {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
+          </button>
+          
           <div className="developer-badge">
             ⚡ Built by Rupak Reddy
           </div>

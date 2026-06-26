@@ -143,7 +143,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 
 // Create Test (Educator Only)
 app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
-  const { title, description, duration, questions, scheduledAt } = req.body;
+  const { title, description, duration, questions, scheduledAt, scheduledEndAt, allowedTabSwitches } = req.body;
   if (!title || !duration || !questions || !Array.isArray(questions)) {
     return res.status(400).json({ error: "Missing required test fields." });
   }
@@ -154,6 +154,8 @@ app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
     description: description || "",
     duration: parseInt(duration),
     scheduledAt: scheduledAt || null, // ISO date-time string, null means always available
+    scheduledEndAt: scheduledEndAt || null, // ISO date-time string, null means no closing deadline
+    allowedTabSwitches: allowedTabSwitches !== undefined ? parseInt(allowedTabSwitches) : 3,
     createdBy: req.user.id,
     createdAt: new Date().toISOString(),
     questions: questions.map(q => ({
@@ -175,7 +177,7 @@ app.post('/api/tests', authenticateToken, requireEducator, (req, res) => {
 
 // Update Test Settings (Educator Only)
 app.put('/api/tests/:id', authenticateToken, requireEducator, (req, res) => {
-  const { title, description, duration, scheduledAt } = req.body;
+  const { title, description, duration, scheduledAt, scheduledEndAt, allowedTabSwitches } = req.body;
   const dbData = db.readDb();
   const testIdx = dbData.tests.findIndex(t => t.id === req.params.id);
 
@@ -192,6 +194,8 @@ app.put('/api/tests/:id', authenticateToken, requireEducator, (req, res) => {
   if (description !== undefined) test.description = description;
   if (duration !== undefined) test.duration = parseInt(duration);
   if (scheduledAt !== undefined) test.scheduledAt = scheduledAt || null;
+  if (scheduledEndAt !== undefined) test.scheduledEndAt = scheduledEndAt || null;
+  if (allowedTabSwitches !== undefined) test.allowedTabSwitches = parseInt(allowedTabSwitches);
 
   dbData.tests[testIdx] = test;
   db.writeDb(dbData);
@@ -230,9 +234,10 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
     return res.json(test);
   }
 
+  const now = new Date();
+
   // Time-gate: Candidates can only access the test at or after the scheduled time
   if (test.scheduledAt) {
-    const now = new Date();
     const scheduled = new Date(test.scheduledAt);
     if (now < scheduled) {
       const diffMs = scheduled - now;
@@ -240,6 +245,16 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
       return res.status(403).json({
         error: `This exam is not yet available. It is scheduled for ${scheduled.toLocaleString()}. Please try again in ${diffMins} minute(s).`,
         scheduledAt: test.scheduledAt
+      });
+    }
+  }
+
+  // Check if exam is closed
+  if (test.scheduledEndAt) {
+    const closed = new Date(test.scheduledEndAt);
+    if (now > closed) {
+      return res.status(403).json({
+        error: `This exam is closed. It was scheduled to close at ${closed.toLocaleString()}.`
       });
     }
   }
@@ -271,6 +286,8 @@ app.get('/api/tests/:id', authenticateToken, (req, res) => {
     description: test.description,
     duration: test.duration,
     scheduledAt: test.scheduledAt || null,
+    scheduledEndAt: test.scheduledEndAt || null,
+    allowedTabSwitches: test.allowedTabSwitches !== undefined ? test.allowedTabSwitches : 3,
     questions: sanitizedQuestions
   });
 });
