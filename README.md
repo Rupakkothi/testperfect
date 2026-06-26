@@ -1,4 +1,4 @@
-# 🛡️ ProctorTest.io: Secure Proctoring & Coding Examination Platform
+# ✦ TestPerfect: Secure Proctoring & Coding Examination Platform
 
 A premium, secure online examination platform featuring real-time webcam and microphone proctoring, browser focus tracking, and a sandboxed multi-language programming compiler (C, C++, Python, Java) powered by Judge0 CE.
 
