@@ -16,7 +16,7 @@ const getApiBaseUrl = () => {
   
   // Production fallback: If running on a Vercel app domain, default to the Render backend server
   if (origin.includes('vercel.app')) {
-    return 'https://testperfect-backend1.onrender.com';
+    return 'https://testperfect-backend.onrender.com';
   }
   
   return origin; // Production default fallback
