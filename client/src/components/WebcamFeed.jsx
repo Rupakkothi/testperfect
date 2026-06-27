@@ -119,6 +119,7 @@ export default function WebcamFeed({ onAudioAlert, onStatusChange }) {
         const dataArray = new Uint8Array(bufferLength);
 
         let loudStart = null;
+        let lastImmediateAlert = 0;
         const checkVolume = () => {
           if (isCancelled || !analyserRef.current) return;
           analyserRef.current.getByteFrequencyData(dataArray);
@@ -131,11 +132,23 @@ export default function WebcamFeed({ onAudioAlert, onStatusChange }) {
           const normVolume = Math.min(Math.round((average / 128) * 100), 100);
           setVolume(normVolume);
 
+          // Immediate threshold check: if sound volume increases to 70% or more, log violation immediately
+          if (normVolume >= 70) {
+            const now = Date.now();
+            if (now - lastImmediateAlert > 5000) {
+              lastImmediateAlert = now;
+              if (onAudioAlertRef.current) {
+                onAudioAlertRef.current(`Critical noise violation: Volume spiked to ${normVolume}%`);
+              }
+            }
+          }
+
+          // Sustained noise threshold check (> 25% for 3 seconds)
           if (normVolume > 25) {
             if (!loudStart) {
               loudStart = Date.now();
             } else if (Date.now() - loudStart > 3000) {
-              if (onAudioAlertRef.current) onAudioAlertRef.current(`Suspicious noise detected (${normVolume}%)`);
+              if (onAudioAlertRef.current) onAudioAlertRef.current(`Suspicious sustained noise detected (${normVolume}%)`);
               loudStart = null;
             }
           } else {
